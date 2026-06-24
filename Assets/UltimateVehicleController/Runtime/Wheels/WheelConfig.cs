@@ -33,6 +33,16 @@ namespace UltimateVehicleController {
         [Min(0.01f)]
         [SerializeField] private float width = 0.35f;
 
+        [Header("Rotation")]
+        [Min(0.01f)]
+        [SerializeField] private float wheelMass = 20f;
+        [Min(0.01f)]
+        [SerializeField] private float wheelInertia = 1.2f;
+        [Min(0f)]
+        [SerializeField] private float angularDrag = 0.05f;
+        [Min(0f)]
+        [SerializeField] private float maxAngularVelocity = 250f;
+
         [Header("Vertical Suspension")]
         [Min(0.01f)]
         [SerializeField] private float suspensionLength = 0.6f;
@@ -67,6 +77,10 @@ namespace UltimateVehicleController {
         [SerializeField] private float sideRayOffset = 0.2f;
         [Min(0f)]
         [SerializeField] private float upRayLength = 0.5f;
+
+        [Header("Friction")]
+        [SerializeField] private WheelFrictionConfig wheelFriction = new();
+
         [Header("Debug")]
         [SerializeField] private bool drawDebug = true;
 
@@ -89,6 +103,11 @@ namespace UltimateVehicleController {
         public float Radius => radius;
         public float Width => width;
 
+        public float WheelMass => wheelMass;
+        public float WheelInertia => wheelInertia;
+        public float AngularDrag => angularDrag;
+        public float MaxAngularVelocity => maxAngularVelocity;
+
         public float SuspensionLength => suspensionLength;
         public float SpringStrength => springStrength;
         public float DamperStrength => damperStrength;
@@ -106,6 +125,8 @@ namespace UltimateVehicleController {
         public float RearRayOffset => rearRayOffset;
         public float SideRayOffset => sideRayOffset;
         public float UpRayLength => upRayLength;
+
+        public WheelFrictionConfig WheelFriction => wheelFriction;
 
         public bool DrawDebug => drawDebug;
 

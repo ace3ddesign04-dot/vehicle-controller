@@ -23,8 +23,26 @@ namespace UltimateVehicleController {
         private float _forwardHorizontalForce;
         private float _rearHorizontalForce;
 
+        private float _sidewaysSlip;
+        private float _forwardSpeed;
+        private float _sidewaysFrictionForce;
+        private float _rollingResistanceForce;
+
+        private float _angularVelocity;
+        private float _rpm;
+        private float _wheelSurfaceSpeed;
+        private float _forwardSlip;
+
+        private float _forwardFrictionForce;
+
         private Vector3 _visualInitialLocalPosition;
+        private Quaternion _visualInitialLocalRotation;
+        private float _visualSpinAngle;
         private bool _hasVisual;
+
+        private float _driveTorque;
+        private float _brakeTorque;
+        private float _handbrakeTorque;
 
         [Header("Config")]
         [SerializeField] private WheelConfig config = new();
@@ -32,13 +50,6 @@ namespace UltimateVehicleController {
         [Header("Visual")]
         [SerializeField] private Transform visual;
 
-        private void Awake() {
-            _hasVisual = visual != null;
-
-            if (_hasVisual) {
-                _visualInitialLocalPosition = visual.localPosition;
-            }
-        }
 
         public WheelConfig Config => config;
         public Transform Visual => visual;
@@ -55,19 +66,79 @@ namespace UltimateVehicleController {
         public float ForwardHorizontalForce => _forwardHorizontalForce;
         public float RearHorizontalForce => _rearHorizontalForce;
 
+        public float SidewaysSlip => _sidewaysSlip;
+        public float ForwardSpeed => _forwardSpeed;
+        public float SidewaysFrictionForce => _sidewaysFrictionForce;
+        public float RollingResistanceForce => _rollingResistanceForce;
+
+        public float AngularVelocity => _angularVelocity;
+        public float Rpm => _rpm;
+        public float WheelSurfaceSpeed => _wheelSurfaceSpeed;
+        public float ForwardSlip => _forwardSlip;
+
+        public float ForwardFrictionForce => _forwardFrictionForce;
+
+        public float DriveTorque => _driveTorque;
+        public float BrakeTorque => _brakeTorque;
+        public float HandbrakeTorque => _handbrakeTorque;
+
         public Vector3 MountPosition => transform.position;
         public Vector3 Up => transform.up;
         public Vector3 Down => -transform.up;
         public Vector3 Forward => transform.forward;
         public Vector3 Right => transform.right;
 
-        public void Simulate(Rigidbody vehicleRigidbody, float fixedDeltaTime) {
-            SimulateContact();
-            ApplyVerticalSuspension(vehicleRigidbody, fixedDeltaTime);
-            ApplyHorizontalSuspension(vehicleRigidbody, fixedDeltaTime);
-            UpdateVisual();
-        }
+        private void Awake() {
+            _hasVisual = visual != null;
 
+            if (!_hasVisual) {
+                return;
+            }
+
+            _visualInitialLocalPosition = visual.localPosition;
+            _visualInitialLocalRotation = visual.localRotation;
+        }
+        private void OnDrawGizmosSelected() {
+            if (config == null || !config.DrawDebug) {
+                return;
+            }
+
+            Vector3 origin = transform.position + transform.up * config.CastStartOffset;
+            Vector3 down = -transform.up;
+            Vector3 forward = transform.forward;
+            Vector3 right = transform.right;
+
+            Gizmos.DrawLine(origin, origin + down * config.CastLength);
+
+            Gizmos.DrawLine(transform.position, transform.position + forward * config.HorizontalSuspensionLength);
+            Gizmos.DrawLine(transform.position, transform.position - forward * config.HorizontalSuspensionLength);
+
+            Gizmos.DrawLine(transform.position, transform.position + transform.up * config.UpRayLength);
+
+            Gizmos.DrawLine(transform.position, transform.position + right * config.SideRayOffset);
+            Gizmos.DrawLine(transform.position, transform.position - right * config.SideRayOffset);
+
+            if (_contact.HasGroundContact) {
+                Gizmos.DrawSphere(_contact.Point, 0.04f);
+                Gizmos.DrawLine(_contact.Point, _contact.Point + _contact.Normal * 0.35f);
+            }
+
+            if (_contact.HasForwardContact) {
+                Gizmos.DrawSphere(_contact.ForwardPoint, 0.035f);
+            }
+
+            if (_contact.HasRearContact) {
+                Gizmos.DrawSphere(_contact.RearPoint, 0.035f);
+            }
+
+            if (_contact.HasUpContact) {
+                Gizmos.DrawSphere(_contact.UpPoint, 0.035f);
+            }
+
+            if (_contact.HasSideContact) {
+                Gizmos.DrawSphere(_contact.SidePoint, 0.035f);
+            }
+        }
         private void SimulateContact() {
             _contact.Clear();
 
@@ -182,8 +253,164 @@ namespace UltimateVehicleController {
                 _previousRearCompression = 0f;
             }
         }
-        private void UpdateVisual() {
-            if (!_hasVisual) {
+        private void ApplyWheelFriction(Rigidbody vehicleRigidbody, float fixedDeltaTime) {
+            _sidewaysSlip = 0f;
+            _forwardSpeed = 0f;
+            _forwardSlip = 0f;
+            _sidewaysFrictionForce = 0f;
+            _forwardFrictionForce = 0f;
+            _rollingResistanceForce = 0f;
+
+            if (vehicleRigidbody == null || fixedDeltaTime <= 0f || !_contact.HasGroundContact) {
+                return;
+            }
+
+            WheelFrictionConfig friction = config.WheelFriction;
+
+            Vector3 forward = Vector3.ProjectOnPlane(Forward, _contact.Normal);
+
+            if (forward.sqrMagnitude <= 0.0001f) {
+                return;
+            }
+
+            forward.Normalize();
+
+            Vector3 right = Vector3.Cross(_contact.Normal, forward).normalized;
+
+            Vector3 pointVelocity = vehicleRigidbody.GetPointVelocity(_contact.Point);
+
+            _forwardSpeed = Vector3.Dot(pointVelocity, forward);
+            _sidewaysSlip = Vector3.Dot(pointVelocity, right);
+            _wheelSurfaceSpeed = _angularVelocity * config.Radius;
+            _forwardSlip = _wheelSurfaceSpeed - _forwardSpeed;
+
+            float normalLoad = friction.GetClampedNormalLoad(_suspensionForce);
+
+            Vector3 tireForce = CalculateCombinedTireForce(
+                vehicleRigidbody,
+                friction,
+                normalLoad,
+                forward,
+                right,
+                fixedDeltaTime);
+
+            vehicleRigidbody.AddForceAtPosition(
+                tireForce,
+                _contact.Point,
+                ForceMode.Force);
+
+            ApplyGroundTorqueFromForwardForce(tireForce, forward, fixedDeltaTime);
+            ApplyRollingResistance(vehicleRigidbody, friction, normalLoad, forward);
+        }
+        private Vector3 CalculateCombinedTireForce(Rigidbody vehicleRigidbody, WheelFrictionConfig friction, float normalLoad, Vector3 forward, Vector3 right, float fixedDeltaTime) {
+            float gravity = Mathf.Max(0.01f, Mathf.Abs(Physics.gravity.y));
+            float wheelLoadMass = normalLoad / gravity;
+
+            float forwardAbs = Mathf.Abs(_forwardSlip);
+            float sidewaysAbs = Mathf.Abs(_sidewaysSlip);
+
+            float forwardCurveForce = 0f;
+            float sidewaysCurveForce = 0f;
+
+            Vector3 forwardForce = Vector3.zero;
+            Vector3 sidewaysForce = Vector3.zero;
+
+            if (forwardAbs > 0.01f) {
+                float grip = friction.ForwardFriction.Evaluate(_forwardSlip);
+                forwardCurveForce = grip * normalLoad;
+
+                float maxStopForce = forwardAbs * wheelLoadMass / fixedDeltaTime;
+
+                _forwardFrictionForce = Mathf.Min(forwardCurveForce, maxStopForce);
+
+                forwardForce = Mathf.Sign(_forwardSlip)
+                               * _forwardFrictionForce
+                               * forward;
+            }
+
+            if (sidewaysAbs > 0.01f) {
+                float grip = friction.SidewaysFriction.Evaluate(_sidewaysSlip);
+                sidewaysCurveForce = grip * normalLoad;
+
+                float maxStopForce = sidewaysAbs * wheelLoadMass / fixedDeltaTime;
+
+                _sidewaysFrictionForce = Mathf.Min(sidewaysCurveForce, maxStopForce);
+
+                sidewaysForce = -Mathf.Sign(_sidewaysSlip)
+                                * _sidewaysFrictionForce
+                                * right;
+            }
+
+            Vector3 combinedForce = forwardForce + sidewaysForce;
+
+            float maxCombinedForce = Mathf.Max(forwardCurveForce, sidewaysCurveForce);
+
+            if (maxCombinedForce > 0f && combinedForce.sqrMagnitude > maxCombinedForce * maxCombinedForce) {
+                combinedForce = combinedForce.normalized * maxCombinedForce;
+
+                _forwardFrictionForce = Mathf.Abs(Vector3.Dot(combinedForce, forward));
+                _sidewaysFrictionForce = Mathf.Abs(Vector3.Dot(combinedForce, right));
+            }
+
+            return combinedForce;
+        }
+        private void ApplyGroundTorqueFromForwardForce(Vector3 tireForce, Vector3 forward, float fixedDeltaTime) {
+            float actualForwardForce = Vector3.Dot(tireForce, forward);
+
+            if (Mathf.Abs(actualForwardForce) <= 0.01f) {
+                return;
+            }
+
+            float groundTorque = -actualForwardForce * config.Radius;
+
+            _angularVelocity += groundTorque / config.WheelInertia * fixedDeltaTime;
+        }
+        private void ApplyRollingResistance(Rigidbody vehicleRigidbody, WheelFrictionConfig friction, float normalLoad, Vector3 forward) { 
+            float speedAbs = Mathf.Abs(_forwardSpeed);
+
+            if (speedAbs <= 0.01f) {
+                _rollingResistanceForce = 0f;
+                return;
+            }
+
+            _rollingResistanceForce = speedAbs * friction.RollingResistance * normalLoad;
+
+            Vector3 force = -Mathf.Sign(_forwardSpeed) * _rollingResistanceForce * forward;
+
+            vehicleRigidbody.AddForceAtPosition(
+                force,
+                _contact.Point,
+                ForceMode.Force);
+        }
+        private void UpdateWheelRotationState(float fixedDeltaTime) {
+            if (fixedDeltaTime <= 0f) {
+                return;
+            }
+
+            _angularVelocity = Mathf.Clamp(
+                _angularVelocity,
+                -config.MaxAngularVelocity,
+                config.MaxAngularVelocity);
+
+            if (config.AngularDrag > 0f) {
+                _angularVelocity = Mathf.MoveTowards(
+                    _angularVelocity,
+                    0f,
+                    config.AngularDrag * fixedDeltaTime);
+            }
+
+            _wheelSurfaceSpeed = _angularVelocity * config.Radius;
+            _rpm = _angularVelocity * 60f / (Mathf.PI * 2f);
+
+            if (_contact.HasGroundContact) {
+                _forwardSlip = _wheelSurfaceSpeed - _forwardSpeed;
+            }
+            else {
+                _forwardSlip = 0f;
+            }
+        }
+        private void UpdateVisual(float fixedDeltaTime) {
+            if (!_hasVisual || fixedDeltaTime <= 0f) {
                 return;
             }
 
@@ -210,9 +437,15 @@ namespace UltimateVehicleController {
                 }
             }
 
-            visual.localPosition = _visualInitialLocalPosition
-                                   + Vector3.up * verticalOffset
-                                   + Vector3.forward * horizontalOffset;
+            _visualSpinAngle += _angularVelocity * Mathf.Rad2Deg * fixedDeltaTime;
+
+            if (_visualSpinAngle > 360f || _visualSpinAngle < -360f) {
+                _visualSpinAngle %= 360f;
+            }
+
+            visual.localPosition = _visualInitialLocalPosition + Vector3.up * verticalOffset + Vector3.forward * horizontalOffset;
+
+            visual.localRotation = _visualInitialLocalRotation * Quaternion.Euler(_visualSpinAngle, 0f, 0f);
         }
 
         private void ResetVerticalSuspension() {
@@ -388,47 +621,62 @@ namespace UltimateVehicleController {
         private Vector3 GetCastOrigin() {
             return MountPosition + Up * config.CastStartOffset;
         }
-
-        private void OnDrawGizmosSelected() {
-            if (config == null || !config.DrawDebug) {
+        private void ApplyExternalTorques(float fixedDeltaTime) {
+            if (fixedDeltaTime <= 0f) {
                 return;
             }
 
-            Vector3 origin = transform.position + transform.up * config.CastStartOffset;
-            Vector3 down = -transform.up;
-            Vector3 forward = transform.forward;
-            Vector3 right = transform.right;
+            float totalBrakeTorque = _brakeTorque + _handbrakeTorque;
 
-            Gizmos.DrawLine(origin, origin + down * config.CastLength);
-
-            Gizmos.DrawLine(transform.position, transform.position + forward * config.HorizontalSuspensionLength);
-            Gizmos.DrawLine(transform.position, transform.position - forward * config.HorizontalSuspensionLength);
-
-            Gizmos.DrawLine(transform.position, transform.position + transform.up * config.UpRayLength);
-
-            Gizmos.DrawLine(transform.position, transform.position + right * config.SideRayOffset);
-            Gizmos.DrawLine(transform.position, transform.position - right * config.SideRayOffset);
-
-            if (_contact.HasGroundContact) {
-                Gizmos.DrawSphere(_contact.Point, 0.04f);
-                Gizmos.DrawLine(_contact.Point, _contact.Point + _contact.Normal * 0.35f);
+            if (Mathf.Abs(_driveTorque) > 0.01f) {
+                _angularVelocity += _driveTorque / config.WheelInertia * fixedDeltaTime;
             }
 
-            if (_contact.HasForwardContact) {
-                Gizmos.DrawSphere(_contact.ForwardPoint, 0.035f);
-            }
+            if (totalBrakeTorque > 0.01f) {
+                float brakeAngularAcceleration = totalBrakeTorque / config.WheelInertia;
 
-            if (_contact.HasRearContact) {
-                Gizmos.DrawSphere(_contact.RearPoint, 0.035f);
+                _angularVelocity = Mathf.MoveTowards(
+                    _angularVelocity,
+                    0f,
+                    brakeAngularAcceleration * fixedDeltaTime);
             }
+        }
+        private void RefreshWheelRotationTelemetry() {
+            _angularVelocity = Mathf.Clamp(
+                _angularVelocity,
+                -config.MaxAngularVelocity,
+                config.MaxAngularVelocity);
 
-            if (_contact.HasUpContact) {
-                Gizmos.DrawSphere(_contact.UpPoint, 0.035f);
-            }
+            _wheelSurfaceSpeed = _angularVelocity * config.Radius;
+            _rpm = _angularVelocity * 60f / (Mathf.PI * 2f);
+        }
+        public void Simulate(Rigidbody vehicleRigidbody, float fixedDeltaTime) {
+            SimulateContact();
+            ApplyVerticalSuspension(vehicleRigidbody, fixedDeltaTime);
+            ApplyHorizontalSuspension(vehicleRigidbody, fixedDeltaTime);
+            ApplyExternalTorques(fixedDeltaTime);
+            RefreshWheelRotationTelemetry();
+            ApplyWheelFriction(vehicleRigidbody, fixedDeltaTime);
+            RefreshWheelRotationTelemetry();
 
-            if (_contact.HasSideContact) {
-                Gizmos.DrawSphere(_contact.SidePoint, 0.035f);
-            }
+            UpdateVisual(fixedDeltaTime);
+        }
+        public void SetDriveTorque(float torque) {
+            _driveTorque = config.CanDrive ? torque * config.DriveWeight : 0f;
+        }
+
+        public void SetBrakeTorque(float torque) {
+            _brakeTorque = config.CanBrake ? Mathf.Max(0f, torque) * config.BrakeWeight : 0f;
+        }
+
+        public void SetHandbrakeTorque(float torque) {
+            _handbrakeTorque = config.CanHandbrake ? Mathf.Max(0f, torque) * config.BrakeWeight : 0f;
+        }
+
+        public void ClearTorques() {
+            _driveTorque = 0f;
+            _brakeTorque = 0f;
+            _handbrakeTorque = 0f;
         }
     }
 }

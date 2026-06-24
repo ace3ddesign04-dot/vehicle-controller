@@ -1,0 +1,20 @@
+Requirements
+-------------
+race
+drift
+burnout
+monster truck
+trailer
+wall climbing
+wall stickiness
+traction
+cruse control
+adw
+rwd
+fwd
+4x4 diff lock
+6x6
+8x8
+arcade
+side scroller
+-------------
